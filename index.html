@@ -140,9 +140,9 @@ function App() {
   const [cursos, setCursos] = useState([]);
   const [cursoAtivo, setCursoAtivo] = useState(null);
   const [modalNovoCurso, setModalNovoCurso] = useState(false);
-  const [novoCurso, setNovoCurso] = useState({nome:"", descricao:"", cor:"#6c3fc5"});
+  const [novoCurso, setNovoCurso] = useState({nome:"", descricao:"", cor:"#6c3fc5", tipo:"mensalidade", mesesExpiracao:12});
   const [modalEditarCurso, setModalEditarCurso] = useState(null);
-  const [dadosEditarCurso, setDadosEditarCurso] = useState({nome:"", descricao:"", cor:"#6c3fc5"});
+  const [dadosEditarCurso, setDadosEditarCurso] = useState({nome:"", descricao:"", cor:"#6c3fc5", tipo:"mensalidade", mesesExpiracao:12});
   const [toast, setToast] = useState(null);
 
   useEffect(() => {
@@ -265,7 +265,9 @@ function App() {
     if (!db||!fsLib) return;
     try {
       await fsLib.setDoc(fsLib.doc(db,"tenants",tenantAtual.id,"cursos",Date.now().toString()), {
-        nome: novoCurso.nome, descricao: novoCurso.descricao, cor: novoCurso.cor
+        nome: novoCurso.nome, descricao: novoCurso.descricao, cor: novoCurso.cor,
+        tipo: novoCurso.tipo||"mensalidade",
+        mesesExpiracao: novoCurso.tipo==="unico" ? parseInt(novoCurso.mesesExpiracao)||12 : null
       });
       setNovoCurso({nome:"",descricao:"",cor:"#6c3fc5"});
       setModalNovoCurso(false);
@@ -278,7 +280,9 @@ function App() {
     if (!db||!fsLib) return;
     try {
       await fsLib.updateDoc(fsLib.doc(db,"tenants",tenantAtual.id,"cursos",modalEditarCurso.id), {
-        nome: dadosEditarCurso.nome, descricao: dadosEditarCurso.descricao, cor: dadosEditarCurso.cor
+        nome: dadosEditarCurso.nome, descricao: dadosEditarCurso.descricao, cor: dadosEditarCurso.cor,
+        tipo: dadosEditarCurso.tipo||"mensalidade",
+        mesesExpiracao: dadosEditarCurso.tipo==="unico" ? parseInt(dadosEditarCurso.mesesExpiracao)||12 : null
       });
       setModalEditarCurso(null);
       showToast("✅ Curso atualizado!");
@@ -344,17 +348,63 @@ function App() {
 
   const showToast = (msg, tipo="sucesso") => { setToast({msg,tipo}); setTimeout(()=>setToast(null),3000); };
 
-  const isPago = (a) => a.cursos?.length>0 && (a.cursos||[]).every(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]??false);
-  const isParcial = (a) => a.cursos?.length>0 && !isPago(a) && (a.cursos||[]).some(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]??false);
-  const isAtrasado = (a) => a.cursos?.length>0 && !(a.cursos||[]).some(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]??false);
+  const cursosMensais = (a) => (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return !c||c.tipo!=="unico"; });
+  const cursosUnicos = (a) => (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return c&&c.tipo==="unico"; });
+  const isPago = (a) => {
+    const mens = cursosMensais(a);
+    const unicos = cursosUnicos(a);
+    const mensPagos = mens.length===0 || mens.every(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]??false);
+    const unicosPagos = unicos.length===0 || unicos.every(cid=>{ const c=cursos.find(x=>x.id===cid); const s=getStatusValorUnico(a,c); return s&&(s.status==="ativo"||s.status==="expirando"); });
+    return (a.cursos?.length>0) && mensPagos && unicosPagos;
+  };
+  const isParcial = (a) => {
+    if (!a.cursos?.length) return false;
+    if (isPago(a)) return false;
+    const mens = cursosMensais(a);
+    const unicos = cursosUnicos(a);
+    const algumMensPago = mens.some(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]??false);
+    const algumUnicoPago = unicos.some(cid=>{ const c=cursos.find(x=>x.id===cid); const s=getStatusValorUnico(a,c); return s&&(s.status==="ativo"||s.status==="expirando"); });
+    return algumMensPago || algumUnicoPago;
+  };
+  const isAtrasado = (a) => a.cursos?.length>0 && !isPago(a) && !isParcial(a);
   const pagosHoje = alunos.filter(a=>isPago(a)).length;
   const inadimplentes = alunos.filter(a=>isAtrasado(a)||isParcial(a)).length;
   const totalRecebido = alunos.reduce((s,a)=>{
     if (!a.cursos?.length) return s;
-    return s + (a.cursos||[]).filter(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
+    const mensal = (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return (!c||c.tipo!=="unico") && (a.pagamentosCursos?.[cid]?.[mesAtual]); }).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
+    const unico = (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); if(!c||c.tipo!=="unico") return false; const st=getStatusValorUnico(a,c); return st&&(st.status==="ativo"||st.status==="expirando"); }).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
+    return s + mensal + unico;
   },0);
   const totalEsperado = alunos.filter(a=>a.cursos?.length>0).reduce((s,a)=>s+Object.values(a.valoresCursos||{}).reduce((t,v)=>t+v,0),0);
   const pct = alunos.length>0 ? Math.round(pagosHoje/alunos.length*100) : 0;
+
+  const getStatusValorUnico = (aluno, curso) => {
+    if (curso.tipo !== "unico") return null;
+    const pago = aluno.pagamentosCursos?.[curso.id]?.["unico"];
+    if (!pago) return { status:"pendente", texto:"💎 Pendente", cor:"#f87171", bg:"#3d1010" };
+    const dataPagto = aluno.pagamentosCursos?.[curso.id]?.["unico_data"];
+    if (dataPagto && curso.mesesExpiracao) {
+      const expira = new Date(dataPagto);
+      expira.setMonth(expira.getMonth() + parseInt(curso.mesesExpiracao));
+      const hoje = new Date();
+      const diasRestantes = Math.ceil((expira - hoje) / (1000*60*60*24));
+      if (diasRestantes < 0) return { status:"expirado", texto:"⏰ Expirado", cor:"#f87171", bg:"#3d1010" };
+      if (diasRestantes <= 30) return { status:"expirando", texto:`⏳ Expira em ${diasRestantes}d`, cor:"#facc15", bg:"#3d3000" };
+      return { status:"ativo", texto:"✅ Ativo até "+expira.toLocaleDateString("pt-BR"), cor:"#4ade80", bg:"#0d3d2e" };
+    }
+    return { status:"ativo", texto:"✅ Pago", cor:"#4ade80", bg:"#0d3d2e" };
+  };
+
+  const marcarValorUnico = async (alunoId, cursoId, pagar) => {
+    if (!db||!fsLib||!tenantAtual?.id) return;
+    try {
+      const updates = {};
+      updates[`pagamentosCursos.${cursoId}.unico`] = pagar;
+      updates[`pagamentosCursos.${cursoId}.unico_data`] = pagar ? new Date().toISOString() : null;
+      await fsLib.updateDoc(fsLib.doc(db,"tenants",tenantAtual.id,"alunos",alunoId), updates);
+      showToast(pagar ? "✅ Pagamento único confirmado!" : "↩️ Pagamento desmarcado");
+    } catch { showToast("Erro ao salvar.","erro"); }
+  };
 
   const diasParaVencer = (diaVencimento) => {
     const hoje = new Date();
@@ -1013,11 +1063,39 @@ Curso(s): ${nomeCursos}` : "")
                       <div style={{display:"flex",flexDirection:"column",gap:10}}>
                         {cursos.filter(c=>alunoSelecionado.cursos?.includes(c.id)).map(c=>{
                           const valC = alunoSelecionado.valoresCursos?.[c.id] ?? 0;
+                          if (c.tipo === "unico") {
+                            const statusU = getStatusValorUnico(alunoSelecionado, c);
+                            return (
+                              <div key={c.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",background:statusU?.bg||"#2d1010",borderRadius:12,flexWrap:"wrap",gap:8}}>
+                                <div>
+                                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                    <div style={{fontWeight:700,color:c.cor||"#9b5de5"}}>{c.nome}</div>
+                                    <span style={{fontSize:10,background:"#2a1a4a",color:"#c084fc",border:"1px solid #7c3aed",padding:"2px 8px",borderRadius:20,fontWeight:700}}>ÚNICO</span>
+                                  </div>
+                                  <div style={{fontSize:12,color:"#888"}}>R$ {valC} • {statusU?.texto}</div>
+                                  {c.mesesExpiracao && <div style={{fontSize:11,color:"#555"}}>Acesso por {c.mesesExpiracao} meses</div>}
+                                </div>
+                                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                                  {statusU?.status==="ativo"||statusU?.status==="expirando" ? (
+                                    <>
+                                      <button className="btn" style={{background:"#1a3a2a",color:"#4ade80",border:"1px solid #166534",padding:"6px 10px",fontSize:11}} onClick={()=>abrirRecibo(alunoSelecionado,"unico",c.id,c.nome)}>🧾</button>
+                                      <button className="btn" style={{background:"#2a2a35",color:"#888",padding:"7px 12px",fontSize:12}} onClick={()=>marcarValorUnico(alunoSelecionado.id,c.id,false)}>Desmarcar</button>
+                                    </>
+                                  ) : (
+                                    <button className="btn" style={{background:"#6c3fc5",color:"#fff",padding:"7px 12px",fontSize:12}} onClick={()=>marcarValorUnico(alunoSelecionado.id,c.id,true)}>💎 Marcar Pago</button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          }
                           const pagoC = alunoSelecionado.pagamentosCursos?.[c.id]?.[mesAtual] ?? false;
                           return (
                             <div key={c.id} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px",background:pagoC?"#0d2d1e":"#2d1010",borderRadius:12,flexWrap:"wrap",gap:8}}>
                               <div>
-                                <div style={{fontWeight:700,color:c.cor||"#9b5de5"}}>{c.nome}</div>
+                                <div style={{display:"flex",alignItems:"center",gap:8}}>
+                                  <div style={{fontWeight:700,color:c.cor||"#9b5de5"}}>{c.nome}</div>
+                                  <span style={{fontSize:10,background:"#0d2040",color:"#60a5fa",border:"1px solid #1e40af",padding:"2px 8px",borderRadius:20,fontWeight:700}}>MENSAL</span>
+                                </div>
                                 <div style={{fontSize:12,color:"#888"}}>R$ {valC} • dia {alunoSelecionado.diaVencimento}</div>
                               </div>
                               <div style={{display:"flex",gap:8,alignItems:"center"}}>
@@ -1044,26 +1122,53 @@ Curso(s): ${nomeCursos}` : "")
                           {c.nome} — R$ {alunoSelecionado.valoresCursos?.[c.id]||0}/mês
                         </div>
                         <div style={{display:"flex",flexDirection:"column",gap:6}}>
-                          {MESES.filter(m=>m.key<=mesAtual).map(m=>{
+                          {c.tipo==="unico" ? (
+                          <div style={{padding:"12px 16px",background:"#12121a",borderRadius:8}}>
+                            {(()=>{
+                              const statusU = getStatusValorUnico(alunoSelecionado, c);
+                              const dataPagto = alunoSelecionado.pagamentosCursos?.[c.id]?.["unico_data"];
+                              return (
+                                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                                  <div>
+                                    <span style={{background:statusU?.bg,color:statusU?.cor,padding:"4px 12px",borderRadius:20,fontSize:12,fontWeight:700}}>{statusU?.texto}</span>
+                                    {dataPagto && <div style={{fontSize:11,color:"#555",marginTop:4}}>Pago em {new Date(dataPagto).toLocaleDateString("pt-BR")}</div>}
+                                    {c.mesesExpiracao && dataPagto && (()=>{
+                                      const exp = new Date(dataPagto); exp.setMonth(exp.getMonth()+parseInt(c.mesesExpiracao));
+                                      return <div style={{fontSize:11,color:"#555"}}>Expira em {exp.toLocaleDateString("pt-BR")}</div>;
+                                    })()}
+                                  </div>
+                                  <div style={{display:"flex",gap:6}}>
+                                    {(statusU?.status==="ativo"||statusU?.status==="expirando") && <button className="btn" style={{background:"#1a3a2a",color:"#4ade80",border:"1px solid #166534",padding:"5px 10px",fontSize:11}} onClick={()=>abrirRecibo(alunoSelecionado,"unico",c.id,c.nome)}>🧾</button>}
+                                    {statusU?.status==="ativo"||statusU?.status==="expirando" ? (
+                                      <button className="btn" style={{background:"#2a2a35",color:"#888",padding:"5px 10px",fontSize:11}} onClick={()=>marcarValorUnico(alunoSelecionado.id,c.id,false)}>Desmarcar</button>
+                                    ) : (
+                                      <button className="btn" style={{background:"#6c3fc5",color:"#fff",padding:"5px 10px",fontSize:11}} onClick={()=>marcarValorUnico(alunoSelecionado.id,c.id,true)}>💎 Marcar Pago</button>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        ) : MESES.filter(m=>m.key<=mesAtual).map(m=>{
                             const pago = alunoSelecionado.pagamentosCursos?.[c.id]?.[m.key] ?? false;
                             const badge = (() => {
                               if (pago) return null;
                               if (m.key < mesAtual) return {texto:"Não pago",cor:"#f87171",bg:"#3d1010",borda:"#991b1b"};
                               const dias = diasParaVencer(alunoSelecionado.diaVencimento);
-                              if (dias < 0) return {texto:`${Math.abs(dias)}d atraso`,cor:"#f87171",bg:"#3d1010",borda:"#991b1b"};
+                              if (dias < 0) return {texto:Math.abs(dias)+"d atraso",cor:"#f87171",bg:"#3d1010",borda:"#991b1b"};
                               if (dias === 0) return {texto:"Vence hoje!",cor:"#fb923c",bg:"#3d1a05",borda:"#c2410c"};
-                              if (dias <= 3) return {texto:`${dias}d`,cor:"#facc15",bg:"#3d3000",borda:"#a16207"};
+                              if (dias <= 3) return {texto:dias+"d",cor:"#facc15",bg:"#3d3000",borda:"#a16207"};
                               return null;
                             })();
                             return (
                               <div key={m.key} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"8px 12px",background:"#12121a",borderRadius:8}}>
                                 <div style={{display:"flex",alignItems:"center",gap:8}}>
                                   <span style={{fontSize:13,fontWeight:500}}>{m.nome}</span>
-                                  {badge&&<span style={{background:badge.bg,color:badge.cor,border:`1px solid ${badge.borda}`,padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700}}>{badge.texto}</span>}
+                                  {badge&&<span style={{background:badge.bg,color:badge.cor,border:"1px solid "+badge.borda,padding:"2px 8px",borderRadius:20,fontSize:10,fontWeight:700}}>{badge.texto}</span>}
                                 </div>
                                 <div style={{display:"flex",gap:6,alignItems:"center"}}>
                                   {pago&&<button className="btn" style={{background:"#1a3a2a",color:"#4ade80",border:"1px solid #166534",padding:"4px 8px",fontSize:10}} onClick={()=>abrirRecibo(alunoSelecionado,m.key,c.id,c.nome)}>🧾</button>}
-                                  <button className="btn" style={{background:pago?"#0d3d2e":"#3d1010",color:pago?"#4ade80":"#f87171",border:`1px solid ${pago?"#166534":"#991b1b"}`,padding:"4px 10px",fontSize:11}} onClick={()=>setModalPagamento({aluno:alunoSelecionado,mesKey:m.key,pago:pago,cursoId:c.id})}>
+                                  <button className="btn" style={{background:pago?"#0d3d2e":"#3d1010",color:pago?"#4ade80":"#f87171",border:"1px solid "+(pago?"#166534":"#991b1b"),padding:"4px 10px",fontSize:11}} onClick={()=>setModalPagamento({aluno:alunoSelecionado,mesKey:m.key,pago:pago,cursoId:c.id})}>
                                     {pago?"✅":"⚠️"}
                                   </button>
                                 </div>
@@ -1168,7 +1273,7 @@ Curso(s): ${nomeCursos}` : "")
                           </div>
                           {loginUser_atual?.admin && (
                             <div style={{display:"flex",gap:8}}>
-                              <button className="btn" style={{background:"#1a2a3a",color:"#60a5fa",border:"1px solid #1e40af",padding:"7px 14px",fontSize:12}} onClick={()=>{setDadosEditarCurso({nome:cursoAtivo.nome,descricao:cursoAtivo.descricao||"",cor:cursoAtivo.cor||"#6c3fc5"});setModalEditarCurso(cursoAtivo);}}>✏️ Editar</button>
+                              <button className="btn" style={{background:"#1a2a3a",color:"#60a5fa",border:"1px solid #1e40af",padding:"7px 14px",fontSize:12}} onClick={()=>{setDadosEditarCurso({nome:cursoAtivo.nome,descricao:cursoAtivo.descricao||"",cor:cursoAtivo.cor||"#6c3fc5",tipo:cursoAtivo.tipo||"mensalidade",mesesExpiracao:cursoAtivo.mesesExpiracao||12});setModalEditarCurso(cursoAtivo);}}>✏️ Editar</button>
                               <button className="btn" style={{background:"#3d1010",color:"#f87171",padding:"7px 14px",fontSize:12}} onClick={()=>removerCurso(cursoAtivo.id)}>🗑️</button>
                             </div>
                           )}
@@ -1476,6 +1581,24 @@ Curso(s): ${nomeCursos}` : "")
             <div style={{display:"flex",flexDirection:"column",gap:12}}>
               <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Nome do curso *</label><input className="input-field" placeholder="Ex: Yoga, Pilates, Dança..." value={novoCurso.nome} onChange={e=>setNovoCurso(p=>({...p,nome:e.target.value}))}/></div>
               <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Descrição</label><input className="input-field" placeholder="Ex: Turma de terça e quinta" value={novoCurso.descricao} onChange={e=>setNovoCurso(p=>({...p,descricao:e.target.value}))}/></div>
+              <div>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:8}}>💰 Tipo de Cobrança</label>
+                <div style={{display:"flex",gap:8}}>
+                  {[["mensalidade","📅 Mensalidade","Cobra todo mês"],["unico","💎 Valor Único","Paga uma vez"]].map(([val,label,desc])=>(
+                    <div key={val} onClick={()=>setNovoCurso(p=>({...p,tipo:val}))} style={{flex:1,padding:"12px",borderRadius:10,cursor:"pointer",border:`2px solid ${novoCurso.tipo===val?"#6c3fc5":"#2a2a35"}`,background:novoCurso.tipo===val?"#1a1a3a":"#12121a",textAlign:"center"}}>
+                      <div style={{fontWeight:700,fontSize:14,color:novoCurso.tipo===val?"#9b5de5":"#888"}}>{label}</div>
+                      <div style={{fontSize:11,color:"#555",marginTop:3}}>{desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {novoCurso.tipo==="unico" && (
+                <div style={{background:"#1a1a2e",borderRadius:10,padding:"12px 16px"}}>
+                  <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>⏱️ Acesso expira após quantos meses?</label>
+                  <input className="input-field" type="number" min="1" max="120" placeholder="Ex: 12" value={novoCurso.mesesExpiracao} onChange={e=>setNovoCurso(p=>({...p,mesesExpiracao:e.target.value}))}/>
+                  <div style={{fontSize:11,color:"#555",marginTop:6}}>Após este período, o aluno aparecerá como expirado</div>
+                </div>
+              )}
               <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Cor do curso</label>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   {["#6c3fc5","#f72585","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"].map(cor=>(
@@ -1499,6 +1622,23 @@ Curso(s): ${nomeCursos}` : "")
             <div style={{display:"flex",flexDirection:"column",gap:12}}>
               <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Nome do curso *</label><input className="input-field" value={dadosEditarCurso.nome} onChange={e=>setDadosEditarCurso(p=>({...p,nome:e.target.value}))}/></div>
               <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Descrição</label><input className="input-field" value={dadosEditarCurso.descricao} onChange={e=>setDadosEditarCurso(p=>({...p,descricao:e.target.value}))}/></div>
+              <div>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:8}}>💰 Tipo de Cobrança</label>
+                <div style={{display:"flex",gap:8}}>
+                  {[["mensalidade","📅 Mensalidade","Cobra todo mês"],["unico","💎 Valor Único","Paga uma vez"]].map(([val,label,desc])=>(
+                    <div key={val} onClick={()=>setDadosEditarCurso(p=>({...p,tipo:val}))} style={{flex:1,padding:"12px",borderRadius:10,cursor:"pointer",border:`2px solid ${dadosEditarCurso.tipo===val?"#6c3fc5":"#2a2a35"}`,background:dadosEditarCurso.tipo===val?"#1a1a3a":"#12121a",textAlign:"center"}}>
+                      <div style={{fontWeight:700,fontSize:14,color:dadosEditarCurso.tipo===val?"#9b5de5":"#888"}}>{label}</div>
+                      <div style={{fontSize:11,color:"#555",marginTop:3}}>{desc}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {dadosEditarCurso.tipo==="unico" && (
+                <div style={{background:"#1a1a2e",borderRadius:10,padding:"12px 16px"}}>
+                  <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>⏱️ Acesso expira após quantos meses?</label>
+                  <input className="input-field" type="number" min="1" max="120" value={dadosEditarCurso.mesesExpiracao} onChange={e=>setDadosEditarCurso(p=>({...p,mesesExpiracao:e.target.value}))}/>
+                </div>
+              )}
               <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Cor do curso</label>
                 <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
                   {["#6c3fc5","#f72585","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"].map(cor=>(
