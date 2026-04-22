@@ -75,6 +75,9 @@ const gerarReciboHTML = (aluno, mesKey, cursoId=null, nomeCurso=null) => {
 
 function App() {
   const MASTER_ADMIN = { usuario: "master", senha: "criatimaster2026", nome: "Super Admin", master: true };
+  const EVOLUTION_API_URL = "/api";
+  const EVOLUTION_API_KEY = "minha-chave-secreta-2026";
+  const EVOLUTION_INSTANCE = "mensalidade";
 
   const [logado, setLogado] = useState(false);
   const [tenantAtual, setTenantAtual] = useState(null);
@@ -86,16 +89,25 @@ function App() {
   const [dadosEditarTenant, setDadosEditarTenant] = useState({nome:"", email:"", plano:"basico", senhaAdmin:""});
   const [loginUser_atual, setLoginUser_atual] = useState(null);
   const [telaUsuarios, setTelaUsuarios] = useState(false);
-  const [novoUsuario, setNovoUsuario] = useState({nome:"",usuario:"",senha:"",isAdmin:false});
+  const [novoUsuario, setNovoUsuario] = useState({nome:"",usuario:"",senha:"",telefone:"",isAdmin:false});
   const [erroUsuario, setErroUsuario] = useState("");
   const [loginUser, setLoginUser] = useState("");
   const [loginPass, setLoginPass] = useState("");
   const [loginErro, setLoginErro] = useState("");
+  const [telaRecuperar, setTelaRecuperar] = useState(false);
+  const [recUser, setRecUser] = useState("");
+  const [recTenantId, setRecTenantId] = useState("");
+  const [recMetodo, setRecMetodo] = useState("whatsapp");
+  const [recCodigo, setRecCodigo] = useState("");
+  const [recNovaSenha, setRecNovaSenha] = useState("");
+  const [recEtapa, setRecEtapa] = useState(1);
+  const [recMsg, setRecMsg] = useState("");
+  const [recErro, setRecErro] = useState("");
 
   const [usuariosDB, setUsuariosDB] = useState([]);
   const [USUARIOS, setUSUARIOS] = useState([]);
 
-  const fazerLogin = () => {
+  const fazerLogin = async () => {
     // Check master admin first
     if (loginUser.toLowerCase().trim() === MASTER_ADMIN.usuario && loginPass === MASTER_ADMIN.senha) {
       setLogado(true); setLoginUser_atual(MASTER_ADMIN); setTenantAtual(null); setLoginErro(""); return;
@@ -110,7 +122,33 @@ function App() {
       const t = tenants.find(t=>t.id===user.tenantId);
       setTenantAtual(t||{id:user.tenantId});
       setLoginErro("");
-    } else { setLoginErro("Usuário ou senha incorretos!"); }
+    } else {
+      // Try to find tenant by checking all tenants for this admin
+      if (db && fsLib) {
+        try {
+          const tenantsSnap = await fsLib.getDocs(fsLib.collection(db,"tenants"));
+          for (const tDoc of tenantsSnap.docs) {
+            if (!tDoc.data().ativo) continue;
+            // Try both "usuarios" and "usuario" collection names
+            for (const colName of ["usuarios","usuario"]) {
+              try {
+                const usersSnap = await fsLib.getDocs(fsLib.collection(db,"tenants",tDoc.id,colName));
+                const found = usersSnap.docs.find(d => d.data().usuario === userPart && d.data().senha === loginPass);
+                if (found) {
+                  const userData = {id:found.id, tenantId:tDoc.id, ...found.data()};
+                  setLogado(true);
+                  setLoginUser_atual({...userData, admin: userData.admin === true});
+                  setTenantAtual({id:tDoc.id, ...tDoc.data()});
+                  setLoginErro("");
+                  return;
+                }
+              } catch(e2) {}
+            }
+          }
+        } catch(e) { console.error(e); }
+      }
+      setLoginErro("Usuário ou senha incorretos!");
+    }
   };
 
   const [db, setDb] = useState(null);
@@ -129,6 +167,9 @@ function App() {
   const [modalEditarAluno, setModalEditarAluno] = useState(null);
   const [modalFotoAluno, setModalFotoAluno] = useState(null);
   const [modalObservacoes, setModalObservacoes] = useState(null);
+  const [modalAdicionarCurso, setModalAdicionarCurso] = useState(null); // {aluno, curso}
+  const [valorNovoCurso, setValorNovoCurso] = useState("");
+  const [gratuito, setGratuito] = useState(false);
   const [modalImportCSV, setModalImportCSV] = useState(false);
   const [previewCSV, setPreviewCSV] = useState([]);
   const [erroCSV, setErroCSV] = useState("");
@@ -315,9 +356,11 @@ function App() {
     try {
       if (!tenantAtual?.id) { setErroUsuario("Erro: cliente não identificado."); return; }
       await fsLib.setDoc(fsLib.doc(db, "tenants", tenantAtual.id, "usuarios", Date.now().toString()), {
-        nome: novoUsuario.nome, usuario: novoUsuario.usuario.toLowerCase().trim(), senha: novoUsuario.senha, admin: novoUsuario.isAdmin, tenantId: tenantAtual.id
+        nome: novoUsuario.nome, usuario: novoUsuario.usuario.toLowerCase().trim(), senha: novoUsuario.senha,
+        telefone: novoUsuario.telefone.replace(/\D/g,"") || "",
+        admin: novoUsuario.isAdmin, tenantId: tenantAtual.id
       });
-      setNovoUsuario({nome:"",usuario:"",senha:"",isAdmin:false});
+      setNovoUsuario({nome:"",usuario:"",senha:"",telefone:"",isAdmin:false});
       setErroUsuario("");
       alert("✅ Usuário criado com sucesso!");
     } catch { setErroUsuario("Erro ao salvar."); }
@@ -351,8 +394,9 @@ function App() {
   const cursosMensais = (a) => (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return !c||c.tipo!=="unico"; });
   const cursosUnicos = (a) => (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return c&&c.tipo==="unico"; });
   const isPago = (a) => {
-    const mens = cursosMensais(a);
-    const unicos = cursosUnicos(a);
+    const gratis = a.cursosGratuitos||[];
+    const mens = cursosMensais(a).filter(cid=>!gratis.includes(cid));
+    const unicos = cursosUnicos(a).filter(cid=>!gratis.includes(cid));
     const mensPagos = mens.length===0 || mens.every(cid=>a.pagamentosCursos?.[cid]?.[mesAtual]??false);
     const unicosPagos = unicos.length===0 || unicos.every(cid=>{ const c=cursos.find(x=>x.id===cid); const s=getStatusValorUnico(a,c); return s&&(s.status==="ativo"||s.status==="expirando"); });
     return (a.cursos?.length>0) && mensPagos && unicosPagos;
@@ -371,11 +415,15 @@ function App() {
   const inadimplentes = alunos.filter(a=>isAtrasado(a)||isParcial(a)).length;
   const totalRecebido = alunos.reduce((s,a)=>{
     if (!a.cursos?.length) return s;
-    const mensal = (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return (!c||c.tipo!=="unico") && (a.pagamentosCursos?.[cid]?.[mesAtual]); }).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
-    const unico = (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); if(!c||c.tipo!=="unico") return false; const st=getStatusValorUnico(a,c); return st&&(st.status==="ativo"||st.status==="expirando"); }).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
+    const gratis = a.cursosGratuitos||[];
+    const mensal = (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); return !gratis.includes(cid) && (!c||c.tipo!=="unico") && (a.pagamentosCursos?.[cid]?.[mesAtual]); }).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
+    const unico = (a.cursos||[]).filter(cid=>{ const c=cursos.find(x=>x.id===cid); if(!c||c.tipo!=="unico"||gratis.includes(cid)) return false; const st=getStatusValorUnico(a,c); return st&&(st.status==="ativo"||st.status==="expirando"); }).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
     return s + mensal + unico;
   },0);
-  const totalEsperado = alunos.filter(a=>a.cursos?.length>0).reduce((s,a)=>s+Object.values(a.valoresCursos||{}).reduce((t,v)=>t+v,0),0);
+  const totalEsperado = alunos.filter(a=>a.cursos?.length>0).reduce((s,a)=>{
+    const vals = (a.cursos||[]).filter(cid=>!(a.cursosGratuitos||[]).includes(cid)).reduce((t,cid)=>t+(a.valoresCursos?.[cid]||0),0);
+    return s+vals;
+  },0);
   const pct = alunos.length>0 ? Math.round(pagosHoje/alunos.length*100) : 0;
 
   const getStatusValorUnico = (aluno, curso) => {
@@ -436,6 +484,28 @@ function App() {
     if (filtro==="atrasados") return isAtrasado(a) && ok;
     return ok;
   });
+
+  const enviarMensagemDireta = async (numero, texto) => {
+    try {
+      const tel = numero.replace(/[^\d]/g, "");
+      const resp = await fetch(EVOLUTION_API_URL + "/message/sendText/" + EVOLUTION_INSTANCE, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "apikey": EVOLUTION_API_KEY },
+        body: JSON.stringify({ number: tel, text: texto })
+      });
+      const data = await resp.json();
+      if (data.key || data.id || data.status === "PENDING") {
+        showToast("✅ Mensagem enviada!");
+        return true;
+      } else {
+        showToast("❌ Erro: " + (data.message||"tente novamente"), "erro");
+        return false;
+      }
+    } catch(e) {
+      showToast("❌ Erro de conexão", "erro");
+      return false;
+    }
+  };
 
   const gerarMsg = (aluno, cursoId=null) => {
     const [,mes] = mesAtual.split("-");
@@ -603,6 +673,27 @@ Curso(s): ${nomeCursos}` : "")
     } catch { showToast("Erro ao salvar foto.","erro"); }
   };
 
+  const confirmarAdicionarCurso = async () => {
+    if (!modalAdicionarCurso || !db || !fsLib || !tenantAtual?.id) return;
+    const { aluno, curso } = modalAdicionarCurso;
+    const valor = gratuito ? 0 : parseFloat(valorNovoCurso);
+    if (!gratuito && (isNaN(valor) || valorNovoCurso === "")) { return; }
+    try {
+      const cursosAtuais = aluno.cursos||[];
+      const valAtual = aluno.valoresCursos||{};
+      const pagAtual = aluno.pagamentosCursos||{};
+      const cursoGratis = aluno.cursosGratuitos||[];
+      await fsLib.updateDoc(fsLib.doc(db,"tenants",tenantAtual.id,"alunos",aluno.id), {
+        cursos: [...cursosAtuais, curso.id],
+        valoresCursos: {...valAtual, [curso.id]: valor},
+        pagamentosCursos: {...pagAtual, [curso.id]: {}},
+        cursosGratuitos: gratuito ? [...cursoGratis, curso.id] : cursoGratis
+      });
+      showToast(gratuito ? "🎁 "+aluno.nome.split(" ")[0]+" adicionado gratuitamente!" : "✅ "+aluno.nome.split(" ")[0]+" adicionado com R$ "+valor+"!");
+      setModalAdicionarCurso(null);
+    } catch(e) { showToast("Erro ao adicionar.","erro"); }
+  };
+
   const salvarObservacoes = async (alunoId, obs) => {
     if (!db||!fsLib||!tenantAtual?.id) return;
     try {
@@ -726,10 +817,96 @@ Curso(s): ${nomeCursos}` : "")
           </div>
           {loginErro && <div style={{background:"#3d1010",border:"1px solid #991b1b",borderRadius:10,padding:"10px 14px",color:"#f87171",fontSize:13,textAlign:"center"}}>{loginErro}</div>}
           <button onClick={fazerLogin} style={{background:"linear-gradient(135deg,#6c3fc5,#9b5de5)",color:"#fff",border:"none",borderRadius:12,padding:"14px",fontSize:15,fontWeight:700,cursor:"pointer",marginTop:4}}>Entrar →</button>
+          <div style={{textAlign:"center",marginTop:8}}>
+            <span onClick={()=>{setTelaRecuperar(true);setRecEtapa(1);setRecErro("");setRecMsg("");setRecUser(loginUser);}} style={{color:"#9b5de5",fontSize:13,cursor:"pointer",textDecoration:"underline"}}>🔑 Esqueci minha senha</span>
+          </div>
         </div>
       </div>
     </div>
   );
+
+  const enviarCodigoRecuperacao = async () => {
+    setRecErro(""); setRecMsg("");
+    if (!recUser || !recTenantId) { setRecErro("Preencha o usuário e selecione a escola."); return; }
+    try {
+      const r = await fetch("/api/recuperar-senha", {
+        method:"POST", headers:{"Content-Type":"application/json","apikey":"minha-chave-secreta-2026"},
+        body:JSON.stringify({usuario:recUser.toLowerCase().trim(), tenantId:recTenantId, metodo:recMetodo})
+      });
+      const d = await r.json();
+      if (d.ok) { setRecMsg(d.msg); setRecEtapa(2); }
+      else setRecErro(d.erro || "Erro ao enviar código");
+    } catch(e) { setRecErro("Erro de conexão"); }
+  };
+
+  const verificarCodigoRecuperacao = async () => {
+    setRecErro("");
+    if (!recCodigo || !recNovaSenha) { setRecErro("Preencha o código e a nova senha."); return; }
+    if (recNovaSenha.length <= 3) { setRecErro("Senha deve ter pelo menos 4 caracteres."); return; }
+    try {
+      const r = await fetch("/api/verificar-codigo", {
+        method:"POST", headers:{"Content-Type":"application/json","apikey":"minha-chave-secreta-2026"},
+        body:JSON.stringify({usuario:recUser.toLowerCase().trim(), tenantId:recTenantId, codigo:recCodigo, novaSenha:recNovaSenha})
+      });
+      const d = await r.json();
+      if (d.ok) { setTelaRecuperar(false); setLoginErro(""); setLoginUser(recUser); setRecEtapa(1); setRecUser(""); setRecTenantId(""); setRecCodigo(""); setRecNovaSenha(""); alert("✅ Senha alterada com sucesso! Faça login com a nova senha."); }
+      else setRecErro(d.erro || "Código incorreto");
+    } catch(e) { setRecErro("Erro de conexão"); }
+  };
+
+  function TelaRecuperacao() {
+    const bgCard = {background:"#1a1a22",border:"1px solid #2a2a35",borderRadius:24,padding:"40px 36px",width:"100%",maxWidth:400,textAlign:"center"};
+    const bgInput = {background:"#12121a",border:"1px solid #2a2a35",borderRadius:10,color:"#e8e6f0",padding:"12px 16px",width:"100%",fontSize:14,outline:"none"};
+    const bgErro = {background:"#3d1010",border:"1px solid #991b1b",borderRadius:10,padding:"10px 14px",color:"#f87171",fontSize:13,textAlign:"center"};
+    const bgOk = {background:"#0a1f0a",border:"1px solid #16a34a",borderRadius:10,padding:"10px 14px",color:"#4ade80",fontSize:13,textAlign:"center"};
+    return (
+      <div style={{fontFamily:"'Outfit',sans-serif",minHeight:"100vh",background:"#0f0f13",display:"flex",alignItems:"center",justifyContent:"center",padding:20}}>
+        <div style={bgCard}>
+          <div style={{fontSize:32,marginBottom:8}}>🔑</div>
+          <div style={{fontSize:18,fontWeight:800,color:"#e8e6f0",marginBottom:20}}>Recuperar Senha</div>
+          <div style={{display:"flex",flexDirection:"column",gap:14,textAlign:"left"}}>
+            <div style={{display:recEtapa===1?"block":"none"}}>
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Usuario</label>
+                <input value={recUser} onChange={e=>setRecUser(e.target.value)} placeholder="Seu usuario" style={bgInput}/>
+              </div>
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Escola</label>
+                <select value={recTenantId} onChange={e=>setRecTenantId(e.target.value)} style={bgInput}>
+                  <option value="">Selecione a escola...</option>
+                  {tenants.filter(function(t){return t.ativo;}).map(function(t){return React.createElement("option",{key:t.id,value:t.id},t.nome);})}
+                </select>
+              </div>
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:8}}>Receber codigo por</label>
+                <div style={{display:"flex",gap:8}}>
+                  <button onClick={function(){setRecMetodo("whatsapp");}} style={{flex:1,padding:"10px",borderRadius:10,border:"2px solid #25d366",background:recMetodo==="whatsapp"?"#0a1f0a":"#12121a",color:"#25d366",cursor:"pointer",fontSize:13,fontWeight:600}}>WhatsApp</button>
+                  <button onClick={function(){setRecMetodo("email");}} style={{flex:1,padding:"10px",borderRadius:10,border:"2px solid #6c3fc5",background:recMetodo==="email"?"#1a0f2e":"#12121a",color:"#9b5de5",cursor:"pointer",fontSize:13,fontWeight:600}}>Email</button>
+                </div>
+              </div>
+              <div style={{display:recErro?"block":"none",marginBottom:10}}><div style={bgErro}>{recErro}</div></div>
+              <button onClick={enviarCodigoRecuperacao} style={{background:"linear-gradient(135deg,#6c3fc5,#9b5de5)",color:"#fff",border:"none",borderRadius:12,padding:"14px",fontSize:15,fontWeight:700,cursor:"pointer",width:"100%",marginBottom:10}}>Enviar Codigo</button>
+              <div style={{textAlign:"center"}}><span onClick={function(){setTelaRecuperar(false);}} style={{color:"#666",fontSize:13,cursor:"pointer"}}>Voltar ao login</span></div>
+            </div>
+            <div style={{display:recEtapa===2?"block":"none"}}>
+              <div style={{display:recMsg?"block":"none",marginBottom:14}}><div style={bgOk}>{recMsg}</div></div>
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Codigo recebido</label>
+                <input value={recCodigo} onChange={e=>setRecCodigo(e.target.value)} placeholder="Codigo de 6 digitos" maxLength={6} style={{background:"#12121a",border:"1px solid #2a2a35",borderRadius:10,color:"#e8e6f0",padding:"12px 16px",width:"100%",fontSize:18,outline:"none",textAlign:"center",letterSpacing:8,fontWeight:700}}/>
+              </div>
+              <div style={{marginBottom:14}}>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Nova senha</label>
+                <input type="password" value={recNovaSenha} onChange={e=>setRecNovaSenha(e.target.value)} placeholder="Nova senha" style={bgInput}/>
+              </div>
+              <div style={{display:recErro?"block":"none",marginBottom:10}}><div style={bgErro}>{recErro}</div></div>
+              <button onClick={verificarCodigoRecuperacao} style={{background:"linear-gradient(135deg,#16a34a,#4ade80)",color:"#fff",border:"none",borderRadius:12,padding:"14px",fontSize:15,fontWeight:700,cursor:"pointer",width:"100%",marginBottom:10}}>Confirmar Nova Senha</button>
+              <div style={{textAlign:"center"}}><span onClick={function(){setRecEtapa(1);setRecErro("");}} style={{color:"#666",fontSize:13,cursor:"pointer"}}>Reenviar codigo</span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   // Master admin screen
   if (logado && loginUser_atual?.master) return (
@@ -1063,6 +1240,7 @@ Curso(s): ${nomeCursos}` : "")
                       <div style={{display:"flex",flexDirection:"column",gap:10}}>
                         {cursos.filter(c=>alunoSelecionado.cursos?.includes(c.id)).map(c=>{
                           const valC = alunoSelecionado.valoresCursos?.[c.id] ?? 0;
+                          const isGratuito = (alunoSelecionado.cursosGratuitos||[]).includes(c.id);
                           if (c.tipo === "unico") {
                             const statusU = getStatusValorUnico(alunoSelecionado, c);
                             return (
@@ -1071,6 +1249,7 @@ Curso(s): ${nomeCursos}` : "")
                                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                                     <div style={{fontWeight:700,color:c.cor||"#9b5de5"}}>{c.nome}</div>
                                     <span style={{fontSize:10,background:"#2a1a4a",color:"#c084fc",border:"1px solid #7c3aed",padding:"2px 8px",borderRadius:20,fontWeight:700}}>ÚNICO</span>
+                                    {isGratuito&&<span style={{fontSize:10,background:"#0d3d2e",color:"#4ade80",border:"1px solid #166534",padding:"2px 8px",borderRadius:20,fontWeight:700}}>🎁 GRÁTIS</span>}
                                   </div>
                                   <div style={{fontSize:12,color:"#888"}}>R$ {valC} • {statusU?.texto}</div>
                                   {c.mesesExpiracao && <div style={{fontSize:11,color:"#555"}}>Acesso por {c.mesesExpiracao} meses</div>}
@@ -1100,9 +1279,13 @@ Curso(s): ${nomeCursos}` : "")
                               </div>
                               <div style={{display:"flex",gap:8,alignItems:"center"}}>
                                 {pagoC && <button className="btn" style={{background:"#1a3a2a",color:"#4ade80",border:"1px solid #166534",padding:"6px 10px",fontSize:11}} onClick={()=>abrirRecibo(alunoSelecionado,mesAtual,c.id,c.nome)}>🧾</button>}
-                                <button className="btn" style={{background:pagoC?"#2a2a35":"#6c3fc5",color:"#fff",padding:"7px 12px",fontSize:12}} onClick={()=>setModalPagamento({aluno:alunoSelecionado,mesKey:mesAtual,pago:pagoC,cursoId:c.id})}>
-                                  {pagoC?"Desmarcar":"Marcar Pago"}
-                                </button>
+                                {isGratuito ? (
+                                  <span style={{fontSize:12,color:"#4ade80",fontWeight:600}}>🎁 Gratuito</span>
+                                ) : (
+                                  <button className="btn" style={{background:pagoC?"#2a2a35":"#6c3fc5",color:"#fff",padding:"7px 12px",fontSize:12}} onClick={()=>setModalPagamento({aluno:alunoSelecionado,mesKey:mesAtual,pago:pagoC,cursoId:c.id})}>
+                                    {pagoC?"Desmarcar":"Marcar Pago"}
+                                  </button>
+                                )}
                               </div>
                             </div>
                           );
@@ -1184,7 +1367,7 @@ Curso(s): ${nomeCursos}` : "")
                     <div className="card" style={{padding:24,marginBottom:20}}>
                       <div style={{fontWeight:700,marginBottom:12}}>💬 Cobrança</div>
                       <div style={{background:"#12121a",borderRadius:10,padding:16,fontSize:13,color:"#ccc",lineHeight:1.7,whiteSpace:"pre-wrap",marginBottom:14}}>{gerarMsg(alunoSelecionado)}</div>
-                      <button className="btn" style={{background:"#25d366",color:"#fff",padding:"10px 18px",fontSize:14,width:"100%"}} onClick={()=>{const msg=encodeURIComponent(gerarMsg(alunoSelecionado));const tel=alunoSelecionado.telefone?.replace(/\D/g,"");window.open(`https://wa.me/${tel}?text=${msg}`,"_blank");}}>📲 Enviar pelo WhatsApp</button>
+                      <button className="btn" style={{background:"#25d366",color:"#fff",padding:"10px 18px",fontSize:14,width:"100%"}} onClick={async()=>{await enviarMensagemDireta(alunoSelecionado.telefone,gerarMsg(alunoSelecionado));}}>📲 Enviar</button>
                     </div>
                   )}
                 </>
@@ -1223,8 +1406,7 @@ Curso(s): ${nomeCursos}` : "")
                         <div style={{fontSize:11,color:"#666",marginTop:2}}>{cursos.filter(c=>a.cursos?.includes(c.id)&&!a.pagamentosCursos?.[c.id]?.[mesAtual]).map(c=>c.nome).join(", ")}</div>
                       </div>
                       <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                        <button className="btn" style={{background:"#25d366",color:"#fff",padding:"8px 14px",fontSize:12}} onClick={()=>{const msg=encodeURIComponent(gerarMsg(a));const tel=a.telefone?.replace(/\D/g,"");window.open(`https://wa.me/${tel}?text=${msg}`,"_blank");}}>📲 WhatsApp</button>
-                        <button className="btn" style={{background:"#6c3fc5",color:"#fff",padding:"8px 14px",fontSize:12}} onClick={()=>setMensagemEnviada(a)}>👁️ Ver msg</button>
+                        <button className="btn" style={{background:"#25d366",color:"#fff",padding:"8px 14px",fontSize:12}} onClick={async()=>{await enviarMensagemDireta(a.telefone,gerarMsg(a));}}>📲 Enviar</button>
                       </div>
                     </div>
                   </div>
@@ -1325,19 +1507,10 @@ Curso(s): ${nomeCursos}` : "")
                               <div style={{display:"flex",alignItems:"center",gap:12,padding:"10px 8px"}}>
                                 <div className="avatar" style={{background:"#1a1a2e",color:"#888"}}>{a.nome?.[0]}</div>
                                 <div style={{flex:1}}><div style={{fontWeight:600,fontSize:14}}>{a.nome}</div><div style={{fontSize:12,color:"#555"}}>{cursos.filter(c=>a.cursos?.includes(c.id)).map(c=>c.nome).join(", ")||"Sem curso"}</div></div>
-                                <button className="btn" style={{background:"#1a3a2a",color:"#4ade80",border:"1px solid #166534",padding:"6px 12px",fontSize:12}} onClick={async()=>{
-                                  if(!db||!fsLib) return;
-                                  const valorCurso = prompt(`Valor da mensalidade de ${a.nome.split(" ")[0]} neste curso (R$):`);
-                                  if(!valorCurso || isNaN(parseFloat(valorCurso))) { showToast("Valor inválido!","erro"); return; }
-                                  const cursosAtuais = a.cursos||[];
-                                  const valAtual = a.valoresCursos||{};
-                                  const pagAtual = a.pagamentosCursos||{};
-                                  await fsLib.updateDoc(fsLib.doc(db,"alunos",a.id),{
-                                    cursos:[...cursosAtuais,cursoAtivo.id],
-                                    valoresCursos:{...valAtual,[cursoAtivo.id]:parseFloat(valorCurso)},
-                                    pagamentosCursos:{...pagAtual,[cursoAtivo.id]:{}}
-                                  });
-                                  showToast(`✅ ${a.nome.split(" ")[0]} adicionado com R$ ${valorCurso}!`);
+                                <button className="btn" style={{background:"#1a3a2a",color:"#4ade80",border:"1px solid #166534",padding:"6px 12px",fontSize:12}} onClick={()=>{
+                                  setValorNovoCurso("");
+                                  setGratuito(false);
+                                  setModalAdicionarCurso({aluno:a, curso:cursoAtivo});
                                 }}>+ Adicionar</button>
                               </div>
                             </div>
@@ -1358,7 +1531,7 @@ Curso(s): ${nomeCursos}` : "")
               <div className="card" style={{padding:24,marginBottom:20}}>
                 <div style={{fontWeight:700,marginBottom:16}}>➕ Novo Usuário</div>
                 <div style={{display:"flex",flexDirection:"column",gap:12}}>
-                  {[["Nome completo","nome","text","Ex: Maria Silva"],["Usuário (login)","usuario","text","Ex: maria"],["Senha","senha","password","Mínimo 6 caracteres"]].map(([label,field,type,ph])=>(
+                  {[["Nome completo","nome","text","Ex: Maria Silva"],["Usuário (login)","usuario","text","Ex: maria"],["Senha","senha","password","Mínimo 6 caracteres"],["WhatsApp (com código do país)","telefone","text","Ex: +55 11 99999-9999"]].map(([label,field,type,ph])=>(
                     <div key={field}>
                       <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>{label}</label>
                       <input className="input-field" type={type} placeholder={ph} value={novoUsuario[field]} onChange={e=>setNovoUsuario(p=>({...p,[field]:e.target.value}))}/>
@@ -1380,7 +1553,7 @@ Curso(s): ${nomeCursos}` : "")
 
               <div className="card" style={{padding:20}}>
                 <div style={{fontWeight:700,marginBottom:16}}>👥 Usuários Cadastrados</div>
-                {[loginUser_atual?.admin ? {id:'admin_fixo', nome:loginUser_atual.nome, usuario:'admin', admin:true} : null, ...usuariosDB.filter(u=>!u.admin||u.id!=='admin_fixo')].filter(Boolean).map((u,i)=>(
+                {[loginUser_atual?.admin && !usuariosDB.find(u=>u.admin) ? {id:'admin_fixo', nome:loginUser_atual.nome, usuario:loginUser_atual.usuario||'admin', admin:true} : null, ...usuariosDB].filter(Boolean).map((u,i)=>(
                   <div key={u.id||i}>
                     {i>0&&<div style={{height:1,background:"#2a2a35",margin:"0 8px"}}/>}
                     <div style={{display:"flex",alignItems:"center",gap:12,padding:"14px 8px"}}>
@@ -1390,7 +1563,7 @@ Curso(s): ${nomeCursos}` : "")
                           {u.nome}
                           {u.admin && <span style={{fontSize:10,background:"#1a1a2e",color:"#9b5de5",border:"1px solid #6c3fc5",padding:"2px 8px",borderRadius:20,fontWeight:700}}>ADMIN</span>}
                         </div>
-                        <div style={{fontSize:12,color:"#888"}}>@{u.usuario}</div>
+                        <div style={{fontSize:12,color:"#888"}}>@{u.usuario}{u.telefone&&<span style={{color:"#4ade80"}}> • 📱 +{u.telefone}</span>}</div>
                       </div>
                       <div style={{display:"flex",gap:6,alignItems:"center"}}>
                         {u.id && u.id !== 'admin_fixo' && (
@@ -1398,16 +1571,42 @@ Curso(s): ${nomeCursos}` : "")
                             onClick={async()=>{
                               try {
                                 await fsLib.updateDoc(fsLib.doc(db,"tenants",tenantAtual.id,"usuarios",u.id),{admin:!u.admin});
-                                showToast(u.admin?"↩️ Admin removido":"✅ Admin concedido!");
+                                showToast(!u.admin?"✅ Admin concedido!":"↩️ Admin removido");
                               } catch { showToast("Erro ao atualizar.","erro"); }
                             }}>
                             {u.admin?"👑 Admin":"👤 Normal"}
                           </button>
                         )}
                         {u.id && u.id !== 'admin_fixo' && (
+                          <button className="btn" style={{background:"#1a2a1a",color:"#4ade80",border:"1px solid #166534",padding:"5px 10px",fontSize:11}} onClick={async()=>{
+                            const tel = prompt("Número WhatsApp do usuário (com código do país, ex: 5511999999999):", u.telefone||"");
+                            if (tel !== null) {
+                              await fsLib.updateDoc(fsLib.doc(db,"tenants",tenantAtual.id,"usuarios",u.id),{telefone:tel.replace(/\D/g,"")});
+                              showToast("📱 Telefone atualizado!");
+                            }
+                          }}>📱</button>
+                        )}
+                        {u.id && u.id !== 'admin_fixo' && (
                           <button className="btn" style={{background:"#3d1010",color:"#f87171",padding:"5px 10px",fontSize:11}} onClick={()=>removerUsuario(u.id)}>🗑️</button>
                         )}
-                        {(!u.id || u.id === 'admin_fixo') && <span style={{fontSize:11,color:"#9b5de5",padding:"4px 10px",border:"1px solid #6c3fc5",borderRadius:20}}>👑 Admin Principal</span>}
+                        {(!u.id || u.id === 'admin_fixo') && (
+                          <div style={{display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+                            <button className="btn" style={{background:"#1a2d3a",color:"#60a5fa",border:"1px solid #1e40af",padding:"5px 10px",fontSize:11}} onClick={async()=>{
+                              const tel = prompt("Seu número WhatsApp (ex: 33783600611):", "");
+                              const novasenha = prompt("Confirme sua senha atual:");
+                              if (tel !== null && novasenha) {
+                                const newId = "admin_"+tenantAtual.id;
+                                await fsLib.setDoc(fsLib.doc(db,"tenants",tenantAtual.id,"usuarios",newId),{
+                                  nome: loginUser_atual.nome, usuario: loginUser_atual.usuario||"admin",
+                                  senha: novasenha, admin: true, tenantId: tenantAtual.id,
+                                  telefone: tel.replace(/\D/g,"")
+                                });
+                                showToast("✅ Admin registrado com telefone!");
+                              }
+                            }}>📱 Registrar</button>
+                            <span style={{fontSize:11,color:"#9b5de5",padding:"4px 10px",border:"1px solid #6c3fc5",borderRadius:20}}>👑 Admin Principal</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1568,7 +1767,7 @@ Curso(s): ${nomeCursos}` : "")
             <div style={{background:"#0d1e14",border:"1px solid #166534",borderRadius:12,padding:18,fontSize:14,lineHeight:1.8,whiteSpace:"pre-wrap",color:"#d1fae5",marginBottom:16}}>{gerarMsg(mensagemEnviada)}</div>
             <div style={{display:"flex",gap:10}}>
               <button className="btn" style={{background:"#2a2a35",color:"#888",padding:"10px 16px",flex:1}} onClick={()=>setMensagemEnviada(null)}>Fechar</button>
-              <button className="btn" style={{background:"#25d366",color:"#fff",padding:"10px 16px",flex:2}} onClick={()=>{const msg=encodeURIComponent(gerarMsg(mensagemEnviada));const tel=mensagemEnviada.telefone?.replace(/\D/g,"");window.open(`https://wa.me/${tel}?text=${msg}`,"_blank");}}>📲 WhatsApp</button>
+              <button className="btn" style={{background:"#25d366",color:"#fff",padding:"10px 16px",flex:2}} onClick={async()=>{const ok=await enviarMensagemDireta(mensagemEnviada.telefone,gerarMsg(mensagemEnviada));if(ok)setMensagemEnviada(null);}}>📲 Enviar Agora</button>
             </div>
           </div>
         </div>
@@ -1577,38 +1776,6 @@ Curso(s): ${nomeCursos}` : "")
       {modalNovoCurso&&(
         <div className="overlay" onClick={()=>setModalNovoCurso(false)}>
           <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:400}}>
-            <h2 style={{fontWeight:800,marginBottom:20}}>🎓 Novo Curso</h2>
-            <div style={{display:"flex",flexDirection:"column",gap:12}}>
-              <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Nome do curso *</label><input className="input-field" placeholder="Ex: Yoga, Pilates, Dança..." value={novoCurso.nome} onChange={e=>setNovoCurso(p=>({...p,nome:e.target.value}))}/></div>
-              <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Descrição</label><input className="input-field" placeholder="Ex: Turma de terça e quinta" value={novoCurso.descricao} onChange={e=>setNovoCurso(p=>({...p,descricao:e.target.value}))}/></div>
-              <div>
-                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:8}}>💰 Tipo de Cobrança</label>
-                <div style={{display:"flex",gap:8}}>
-                  {[["mensalidade","📅 Mensalidade","Cobra todo mês"],["unico","💎 Valor Único","Paga uma vez"]].map(([val,label,desc])=>(
-                    <div key={val} onClick={()=>setNovoCurso(p=>({...p,tipo:val}))} style={{flex:1,padding:"12px",borderRadius:10,cursor:"pointer",border:`2px solid ${novoCurso.tipo===val?"#6c3fc5":"#2a2a35"}`,background:novoCurso.tipo===val?"#1a1a3a":"#12121a",textAlign:"center"}}>
-                      <div style={{fontWeight:700,fontSize:14,color:novoCurso.tipo===val?"#9b5de5":"#888"}}>{label}</div>
-                      <div style={{fontSize:11,color:"#555",marginTop:3}}>{desc}</div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-              {novoCurso.tipo==="unico" && (
-                <div style={{background:"#1a1a2e",borderRadius:10,padding:"12px 16px"}}>
-                  <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>⏱️ Acesso expira após quantos meses?</label>
-                  <input className="input-field" type="number" min="1" max="120" placeholder="Ex: 12" value={novoCurso.mesesExpiracao} onChange={e=>setNovoCurso(p=>({...p,mesesExpiracao:e.target.value}))}/>
-                  <div style={{fontSize:11,color:"#555",marginTop:6}}>Após este período, o aluno aparecerá como expirado</div>
-                </div>
-              )}
-              <div><label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>Cor do curso</label>
-                <div style={{display:"flex",gap:8,flexWrap:"wrap"}}>
-                  {["#6c3fc5","#f72585","#0ea5e9","#10b981","#f59e0b","#ef4444","#8b5cf6","#ec4899"].map(cor=>(
-                    <div key={cor} onClick={()=>setNovoCurso(p=>({...p,cor}))} style={{width:32,height:32,borderRadius:"50%",background:cor,cursor:"pointer",border:novoCurso.cor===cor?"3px solid #fff":"3px solid transparent"}}/>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div style={{display:"flex",gap:10,marginTop:22}}>
-              <button className="btn" style={{background:"#2a2a35",color:"#888",padding:"11px 20px",flex:1}} onClick={()=>setModalNovoCurso(false)}>Cancelar</button>
               <button className="btn" style={{background:"linear-gradient(135deg,#6c3fc5,#9b5de5)",color:"#fff",padding:"11px 20px",flex:2}} onClick={adicionarCurso}>✅ Criar Curso</button>
             </div>
           </div>
@@ -1735,6 +1902,52 @@ Curso(s): ${nomeCursos}` : "")
         </div>
       )}
 
+      {modalAdicionarCurso&&(
+        <div className="overlay" onClick={()=>setModalAdicionarCurso(null)}>
+          <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:420}}>
+            <h3 style={{fontWeight:800,marginBottom:6}}>➕ Adicionar ao Curso</h3>
+            <p style={{fontSize:13,color:"#888",marginBottom:20}}>
+              <span style={{color:"#e8e6f0",fontWeight:600}}>{modalAdicionarCurso.aluno.nome.split(" ")[0]}</span> → <span style={{color:modalAdicionarCurso.curso.cor||"#9b5de5",fontWeight:600}}>{modalAdicionarCurso.curso.nome}</span>
+            </p>
+
+            {/* Gratuito toggle */}
+            <div style={{background:"#12121a",borderRadius:12,padding:"14px 16px",marginBottom:16,display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",border:gratuito?"1px solid #166534":"1px solid #2a2a35"}} onClick={()=>setGratuito(g=>!g)}>
+              <div>
+                <div style={{fontWeight:700,fontSize:14,color:gratuito?"#4ade80":"#e8e6f0"}}>🎁 Curso Gratuito</div>
+                <div style={{fontSize:12,color:"#666",marginTop:2}}>Isenta este aluno do pagamento</div>
+              </div>
+              <div style={{width:44,height:24,borderRadius:999,background:gratuito?"#166534":"#2a2a35",position:"relative",transition:"all .2s",flexShrink:0}}>
+                <div style={{position:"absolute",top:2,left:gratuito?20:2,width:20,height:20,borderRadius:"50%",background:"#fff",transition:"all .2s"}}/>
+              </div>
+            </div>
+
+            {/* Valor input - only if not gratuito */}
+            {!gratuito && (
+              <div style={{marginBottom:16}}>
+                <label style={{fontSize:12,color:"#888",display:"block",marginBottom:6}}>
+                  {modalAdicionarCurso.curso.tipo==="unico" ? "💎 Valor único (R$)" : "💰 Valor mensal (R$)"}
+                </label>
+                <input className="input-field" type="number" min="0" placeholder="Ex: 200" value={valorNovoCurso} onChange={e=>setValorNovoCurso(e.target.value)} autoFocus/>
+              </div>
+            )}
+
+            {gratuito && (
+              <div style={{background:"#0d3d2e",border:"1px solid #166534",borderRadius:10,padding:"10px 14px",marginBottom:16,fontSize:13,color:"#4ade80"}}>
+                ✅ Este aluno terá acesso gratuito — não aparecerá nos cálculos financeiros
+              </div>
+            )}
+
+            <div style={{display:"flex",gap:10}}>
+              <button className="btn" style={{background:"#2a2a35",color:"#888",padding:"11px 20px",flex:1}} onClick={()=>setModalAdicionarCurso(null)}>Cancelar</button>
+              <button className="btn" style={{background:gratuito?"#166534":"linear-gradient(135deg,#6c3fc5,#9b5de5)",color:"#fff",padding:"11px 20px",flex:2,fontWeight:700,opacity:(!gratuito&&!valorNovoCurso)?0.5:1}}
+                onClick={confirmarAdicionarCurso} disabled={!gratuito&&!valorNovoCurso}>
+                {gratuito?"🎁 Adicionar Gratuitamente":"✅ Confirmar"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {modalFotoAluno&&(
         <div className="overlay" onClick={()=>setModalFotoAluno(null)}>
           <div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380,textAlign:"center"}}>
@@ -1780,7 +1993,7 @@ Curso(s): ${nomeCursos}` : "")
 
       {toast&&<div className="toast" style={{background:toast.tipo==="erro"?"#3d1010":"#0d3d2e",color:toast.tipo==="erro"?"#f87171":"#4ade80",border:`1px solid ${toast.tipo==="erro"?"#991b1b":"#166534"}`}}>{toast.msg}</div>}
     </div>
-  ) : telaLogin;
+  ) : telaRecuperar ? React.createElement(TelaRecuperacao) : telaLogin;
 }
 
 const root = ReactDOM.createRoot(document.getElementById('root'));
